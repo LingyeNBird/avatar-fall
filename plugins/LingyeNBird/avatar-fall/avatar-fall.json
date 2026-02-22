@@ -1,0 +1,23 @@
+{
+  "id": "avatar-fall",
+  "repo": "LingyeNBird/avatar-fall",
+  "name": {
+    "zh-CN": "掉个头",
+    "en-US": "Avatar Fall"
+  },
+  "description": {
+    "zh-CN": "关于页贡献者头像掉落碰撞特效插件。",
+    "en-US": "Avatar drop and collision effect for the About page."
+  },
+  "icon_url": "icon.png",
+  "categories": [
+    "ui"
+  ],
+  "permissions": [
+    "log",
+    "ui",
+    "fs"
+  ],
+  "download_type": "source",
+  "branch": "main"
+}
