@@ -1,0 +1,13 @@
+{
+  "id": "avatar-fall",
+  "name": "掉个头",
+  "version": "1.0.0",
+  "description": "关于页贡献者头像掉落碰撞特效插件。",
+  "author": {
+    "name": "LingyeNBird"
+  },
+  "main": "main.lua",
+  "icon": "icon.png",
+  "permissions": ["log", "ui", "fs"],
+  "include": ["dist/avatar-fall.bundle.js"]
+}
