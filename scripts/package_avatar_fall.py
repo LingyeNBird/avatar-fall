@@ -7,7 +7,12 @@ from typing import TypedDict, cast
 from zipfile import ZIP_DEFLATED, ZipFile
 
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT_FROM_CWD = Path.cwd()
+ROOT = (
+    ROOT_FROM_CWD
+    if (ROOT_FROM_CWD / "plugins-demo" / "avatar-fall" / "manifest.json").exists()
+    else Path(__file__).resolve().parent.parent
+)
 PLUGIN_DIR = ROOT / "plugins-demo" / "avatar-fall"
 RELEASE_DIR = ROOT / "release"
 
@@ -75,9 +80,9 @@ def collect_files(paths: list[Path]) -> list[Path]:
     return files
 
 
-def build_zip(files: list[Path], plugin_id: str, version: str) -> Path:
+def build_zip(files: list[Path], plugin_id: str) -> Path:
     RELEASE_DIR.mkdir(parents=True, exist_ok=True)
-    zip_path = RELEASE_DIR / f"{plugin_id}-{version}.zip"
+    zip_path = RELEASE_DIR / f"{plugin_id}.zip"
     with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as zf:
         for file_path in files:
             rel = file_path.relative_to(PLUGIN_DIR)
@@ -92,10 +97,9 @@ def main() -> None:
 
     manifest = load_manifest()
     plugin_id = manifest["id"]
-    version = manifest["version"]
     release_entries = resolve_release_files(manifest)
     files = collect_files(release_entries)
-    zip_path = build_zip(files, plugin_id, version)
+    zip_path = build_zip(files, plugin_id)
 
     print(f"Created: {zip_path}")
     print("Included files:")
