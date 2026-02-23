@@ -3,7 +3,7 @@
   "private": true,
   "version": "1.0.0",
   "scripts": {
-    "build": "esbuild src/runtime.js --bundle --format=iife --target=es2018 --outfile=dist/avatar-fall.bundle.js"
+    "build": "esbuild src/runtime.js --bundle --format=iife --target=es2018 --outfile=avatar-fall.bundle.js"
   },
   "dependencies": {
     "matter-js": "^0.20.0"

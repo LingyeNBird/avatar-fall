@@ -1,7 +1,7 @@
 local plugin = {}
 
 local ELEMENT_ID = "avatar-fall-runtime"
-local BUNDLE_PATH = "dist/avatar-fall.bundle.js"
+local BUNDLE_PATH = "avatar-fall.bundle.js"
 
 local cached_bundle = nil
 local bundle_loaded = false

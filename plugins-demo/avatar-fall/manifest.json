@@ -9,5 +9,5 @@
   "main": "main.lua",
   "icon": "icon.png",
   "permissions": ["log", "ui", "fs"],
-  "include": ["dist/avatar-fall.bundle.js"]
+  "include": ["avatar-fall.bundle.js"]
 }
