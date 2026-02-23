@@ -4909,7 +4909,6 @@
   var ABOUT_PATH = "/about";
   var CONTROLLER_KEY = "__slAvatarFallController";
   var APPLY_KEY = "__avatarFallApplyRoute";
-  var FLOOR_OFFSET = 12;
   var PHYSICS_MAX_DELTA_MS = 1e3 / 30;
   var FALLING_AVATAR_SIZE = 50;
   var LAUNCH_SPEED_MIN = 7;
@@ -4918,13 +4917,11 @@
   var AVATAR_RESTITUTION = 0.9;
   var BOUNDS_RESTITUTION = 1;
   var FADE_OUT_MS = 3e3;
+  var SCREEN_WALL_THICKNESS = 140;
+  var WINDOW_SWEEP_PUSH = 0.9;
+  var WINDOW_SWEEP_MIN_SPEED = 8;
   function randomBetween(min, max) {
     return min + Math.random() * (max - min);
-  }
-  function clamp(value, min, max) {
-    if (value < min) return min;
-    if (value > max) return max;
-    return value;
   }
   function normalizeRoute(route) {
     if (!route || route === "__INIT__") {
@@ -4935,6 +4932,9 @@
     }
     return route;
   }
+  function isPointInRect(position, rect, margin = 0) {
+    return position.x >= rect.x - margin && position.x <= rect.x + rect.width + margin && position.y >= rect.y - margin && position.y <= rect.y + rect.height + margin;
+  }
   function createController() {
     const state = {
       currentRoute: "",
@@ -4942,8 +4942,9 @@
       boundaryBodies: [],
       avatars: [],
       overlay: null,
-      overlayHost: null,
-      hostRect: { left: 0, top: 0, width: 1, height: 1 },
+      screenRect: { x: 0, y: 0, width: 1, height: 1 },
+      windowRect: { x: 0, y: 0, width: 1, height: 1 },
+      lastWindowRect: null,
       active: false,
       pending: false,
       fading: false,
@@ -4952,32 +4953,31 @@
       fadeTimer: 0,
       retryTimer: 0,
       resizeHandler: null,
-      clickHandler: null,
-      hostResizeObserver: null
+      clickHandler: null
     };
-    function getHostElement() {
-      return document.querySelector(".app-main");
+    function getScreenRect() {
+      const x = typeof window.screen.availLeft === "number" ? window.screen.availLeft : 0;
+      const y = typeof window.screen.availTop === "number" ? window.screen.availTop : 0;
+      const width = Math.max(1, window.screen.availWidth || window.screen.width || window.innerWidth);
+      const height = Math.max(
+        1,
+        window.screen.availHeight || window.screen.height || window.innerHeight
+      );
+      return { x, y, width, height };
     }
-    function updateHostRect() {
-      const host = getHostElement();
-      if (host) {
-        const rect = host.getBoundingClientRect();
-        state.hostRect = {
-          left: rect.left,
-          top: rect.top,
-          width: Math.max(1, rect.width),
-          height: Math.max(1, rect.height)
-        };
-        state.overlayHost = host;
-        return;
+    function getWindowRect() {
+      const x = typeof window.screenX === "number" ? window.screenX : typeof window.screenLeft === "number" ? window.screenLeft : 0;
+      const y = typeof window.screenY === "number" ? window.screenY : typeof window.screenTop === "number" ? window.screenTop : 0;
+      const width = Math.max(1, window.outerWidth || window.innerWidth);
+      const height = Math.max(1, window.outerHeight || window.innerHeight);
+      return { x, y, width, height };
+    }
+    function syncRects() {
+      state.screenRect = getScreenRect();
+      state.windowRect = getWindowRect();
+      if (!state.lastWindowRect) {
+        state.lastWindowRect = { ...state.windowRect };
       }
-      state.hostRect = {
-        left: 0,
-        top: 0,
-        width: Math.max(1, window.innerWidth),
-        height: Math.max(1, window.innerHeight)
-      };
-      state.overlayHost = null;
     }
     function ensureOverlay() {
       if (state.overlay && state.overlay.parentNode) {
@@ -4997,11 +4997,10 @@
     }
     function syncOverlayBounds() {
       if (!state.overlay) return;
-      updateHostRect();
-      state.overlay.style.left = `${state.hostRect.left}px`;
-      state.overlay.style.top = `${state.hostRect.top}px`;
-      state.overlay.style.width = `${state.hostRect.width}px`;
-      state.overlay.style.height = `${state.hostRect.height}px`;
+      state.overlay.style.left = "0px";
+      state.overlay.style.top = "0px";
+      state.overlay.style.width = `${Math.max(1, window.innerWidth)}px`;
+      state.overlay.style.height = `${Math.max(1, window.innerHeight)}px`;
     }
     function stopPhysicsLoop() {
       if (state.frameId) {
@@ -5029,10 +5028,6 @@
         document.removeEventListener("click", state.clickHandler, true);
         state.clickHandler = null;
       }
-      if (state.hostResizeObserver) {
-        state.hostResizeObserver.disconnect();
-        state.hostResizeObserver = null;
-      }
     }
     function destroyMatterWorld() {
       if (!state.engine) {
@@ -5050,23 +5045,13 @@
       }
       state.overlay = null;
     }
-    function syncAvatarStateFromBodies() {
-      for (let i = 0; i < state.avatars.length; i += 1) {
-        const avatar = state.avatars[i];
-        const body = avatar.body;
-        avatar.el.style.transform = `translate3d(${body.position.x - avatar.halfSize}px, ${body.position.y - avatar.halfSize}px, 0) rotate(${body.angle}rad)`;
-        avatar.el.style.zIndex = `${Math.round(body.position.y)}`;
-      }
-    }
-    function createWorldBounds() {
+    function createScreenBounds() {
       if (!state.engine) return;
       if (state.boundaryBodies.length > 0) {
         World.remove(state.engine.world, state.boundaryBodies);
       }
-      const width = Math.max(state.hostRect.width, 320);
-      const height = Math.max(state.hostRect.height, 200);
-      const wallThickness = 120;
-      const floorY = height - FLOOR_OFFSET + wallThickness / 2;
+      const { x, y, width, height } = state.screenRect;
+      const wall = SCREEN_WALL_THICKNESS;
       const options = {
         isStatic: true,
         restitution: BOUNDS_RESTITUTION,
@@ -5075,22 +5060,64 @@
         render: { visible: false }
       };
       state.boundaryBodies = [
-        Bodies.rectangle(-wallThickness / 2, height / 2, wallThickness, height * 2, options),
-        Bodies.rectangle(width + wallThickness / 2, height / 2, wallThickness, height * 2, options),
-        Bodies.rectangle(width / 2, floorY, width * 2, wallThickness, options)
+        Bodies.rectangle(x - wall / 2, y + height / 2, wall, height * 2, options),
+        Bodies.rectangle(x + width + wall / 2, y + height / 2, wall, height * 2, options),
+        Bodies.rectangle(x + width / 2, y - wall / 2, width * 2, wall, options),
+        Bodies.rectangle(x + width / 2, y + height + wall / 2, width * 2, wall, options)
       ];
       World.add(state.engine.world, state.boundaryBodies);
     }
-    function clampBodiesToBounds() {
-      const width = Math.max(state.hostRect.width, 320);
-      const height = Math.max(state.hostRect.height, 200);
+    function applyWindowSweepImpulse() {
+      if (!state.lastWindowRect) return;
+      const prev = state.lastWindowRect;
+      const curr = state.windowRect;
+      const dx = curr.x - prev.x;
+      const dy = curr.y - prev.y;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
+        return;
+      }
+      const primaryIsX = Math.abs(dx) >= Math.abs(dy);
       for (let i = 0; i < state.avatars.length; i += 1) {
         const avatar = state.avatars[i];
         const body = avatar.body;
-        const clampedX = clamp(body.position.x, avatar.halfSize, Math.max(avatar.halfSize, width - avatar.halfSize));
-        const maxY = Math.max(avatar.halfSize, height - FLOOR_OFFSET - avatar.halfSize);
-        const clampedY = clamp(body.position.y, avatar.halfSize, maxY);
-        Body.setPosition(body, { x: clampedX, y: clampedY });
+        const enteredNow = isPointInRect(body.position, curr, avatar.halfSize) && !isPointInRect(body.position, prev, avatar.halfSize);
+        if (!enteredNow) {
+          continue;
+        }
+        const currentVelocity = body.velocity;
+        const nextVelocity = { x: currentVelocity.x + dx * WINDOW_SWEEP_PUSH, y: currentVelocity.y + dy * WINDOW_SWEEP_PUSH };
+        if (primaryIsX) {
+          if (dx > 0) {
+            nextVelocity.x = Math.max(nextVelocity.x, WINDOW_SWEEP_MIN_SPEED);
+          } else {
+            nextVelocity.x = Math.min(nextVelocity.x, -WINDOW_SWEEP_MIN_SPEED);
+          }
+        } else if (dy > 0) {
+          nextVelocity.y = Math.max(nextVelocity.y, WINDOW_SWEEP_MIN_SPEED);
+        } else {
+          nextVelocity.y = Math.min(nextVelocity.y, -WINDOW_SWEEP_MIN_SPEED);
+        }
+        Body.setVelocity(body, nextVelocity);
+        Body.setAngularVelocity(body, body.angularVelocity + randomBetween(-0.08, 0.08));
+      }
+    }
+    function syncAvatarStateFromBodies() {
+      const viewWidth = Math.max(1, window.innerWidth);
+      const viewHeight = Math.max(1, window.innerHeight);
+      const { x: windowX, y: windowY } = state.windowRect;
+      for (let i = 0; i < state.avatars.length; i += 1) {
+        const avatar = state.avatars[i];
+        const body = avatar.body;
+        const localX = body.position.x - windowX;
+        const localY = body.position.y - windowY;
+        const visible = localX >= -avatar.halfSize * 2 && localX <= viewWidth + avatar.halfSize * 2 && localY >= -avatar.halfSize * 2 && localY <= viewHeight + avatar.halfSize * 2;
+        if (!visible) {
+          avatar.el.style.display = "none";
+          continue;
+        }
+        avatar.el.style.display = "block";
+        avatar.el.style.transform = `translate3d(${localX - avatar.halfSize}px, ${localY - avatar.halfSize}px, 0) rotate(${body.angle}rad)`;
+        avatar.el.style.zIndex = `${Math.round(localY)}`;
       }
     }
     function runPhysicsFrame(timestamp) {
@@ -5101,6 +5128,9 @@
       if (!state.lastFrame) {
         state.lastFrame = timestamp;
       }
+      syncRects();
+      applyWindowSweepImpulse();
+      state.lastWindowRect = { ...state.windowRect };
       const deltaMs = Math.min(timestamp - state.lastFrame, PHYSICS_MAX_DELTA_MS);
       state.lastFrame = timestamp;
       Engine.update(state.engine, deltaMs);
@@ -5164,7 +5194,7 @@
           }
           continue;
         }
-        if (depth >= 4) {
+        if (depth >= 5) {
           continue;
         }
         const nextDepth = depth + 1;
@@ -5197,7 +5227,7 @@
       }
       if (section.__vueParentComponent) {
         let node = section.__vueParentComponent;
-        for (let i = 0; i < 5 && node; i += 1) {
+        for (let i = 0; i < 6 && node; i += 1) {
           candidates.push(node);
           node = node.parent;
         }
@@ -5246,21 +5276,22 @@
     function setupFallingAvatars(contributors) {
       state.avatars = [];
       if (!state.engine || !state.overlay) return;
-      const width = Math.max(state.hostRect.width, 320);
-      const height = Math.max(state.hostRect.height, 200);
-      const centerX = width / 2;
+      const win = state.windowRect;
+      const width = Math.max(win.width, 320);
+      const height = Math.max(win.height, 220);
+      const centerX = win.x + width / 2;
       const halfSize = FALLING_AVATAR_SIZE / 2;
-      const spawnYMin = Math.max(40, height * 0.28);
-      const spawnYMax = Math.max(spawnYMin + 20, height * 0.46);
-      const launchTargetYMin = Math.max(20, height * 0.08);
-      const launchTargetYMax = Math.max(launchTargetYMin + 12, height * 0.2);
+      const spawnYMin = win.y + Math.max(30, height * 0.25);
+      const spawnYMax = win.y + Math.max(60, height * 0.42);
+      const launchTargetYMin = win.y + Math.max(20, height * 0.08);
+      const launchTargetYMax = win.y + Math.max(40, height * 0.2);
       const launchTargetOffsetX = width * 0.14;
       for (let index = 0; index < contributors.length; index += 1) {
         const contributor = contributors[index];
         const isLeftSide = index % 2 === 0;
-        const sideXMin = isLeftSide ? halfSize + 8 : Math.max(halfSize + 8, width * 0.82);
-        const sideXMax = isLeftSide ? Math.min(width * 0.18, width - halfSize - 8) : Math.max(halfSize + 8, width - halfSize - 8);
-        const x = randomBetween(sideXMin, Math.max(sideXMin + 1, sideXMax));
+        const localXMin = isLeftSide ? halfSize + 8 : Math.max(halfSize + 8, width * 0.82);
+        const localXMax = isLeftSide ? Math.min(width * 0.18, width - halfSize - 8) : Math.max(halfSize + 8, width - halfSize - 8);
+        const x = win.x + randomBetween(localXMin, Math.max(localXMin + 1, localXMax));
         const y = randomBetween(spawnYMin, spawnYMax);
         const targetX = centerX + randomBetween(-launchTargetOffsetX, launchTargetOffsetX);
         const targetY = randomBetween(launchTargetYMin, launchTargetYMax);
@@ -5308,6 +5339,7 @@
       state.active = false;
       state.pending = false;
       state.fading = false;
+      state.lastWindowRect = null;
     }
     function triggerFadeOut() {
       if (!state.active || state.fading) return;
@@ -5332,33 +5364,22 @@
       document.addEventListener("click", state.clickHandler, true);
       state.resizeHandler = () => {
         if (!state.active || !state.engine) return;
+        syncRects();
         syncOverlayBounds();
-        createWorldBounds();
-        clampBodiesToBounds();
+        createScreenBounds();
         syncAvatarStateFromBodies();
       };
       window.addEventListener("resize", state.resizeHandler);
-      const host = getHostElement();
-      if (host && "ResizeObserver" in window) {
-        state.hostResizeObserver = new ResizeObserver(() => {
-          if (!state.active || !state.engine) return;
-          syncOverlayBounds();
-          createWorldBounds();
-          clampBodiesToBounds();
-          syncAvatarStateFromBodies();
-        });
-        state.hostResizeObserver.observe(host);
-      }
     }
     function startRuntime(contributors) {
       clearRuntimeState();
-      updateHostRect();
+      syncRects();
       ensureOverlay();
       syncOverlayBounds();
       state.engine = Engine.create({
         gravity: { x: 0, y: 1.2, scale: 1e-3 }
       });
-      createWorldBounds();
+      createScreenBounds();
       setupFallingAvatars(contributors);
       if (state.avatars.length === 0) {
         clearRuntimeState();
