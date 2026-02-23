@@ -1,4 +1,5 @@
 import Matter from "matter-js";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 const { Bodies, Body, Engine, World } = Matter;
 
@@ -18,6 +19,9 @@ const FADE_OUT_MS = 3000;
 const SCREEN_WALL_THICKNESS = 140;
 const WINDOW_SWEEP_PUSH = 0.9;
 const WINDOW_SWEEP_MIN_SPEED = 8;
+const WINDOW_SYNC_INTERVAL_MS = 60;
+
+const appWindow = getCurrentWindow();
 
 function randomBetween(min, max) {
   return min + Math.random() * (max - min);
@@ -44,6 +48,38 @@ function isPointInRect(position, rect, margin = 0) {
   );
 }
 
+function parsePosition(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  if (typeof value.x === "number" && typeof value.y === "number") {
+    return { x: value.x, y: value.y };
+  }
+  if (value.payload && typeof value.payload === "object") {
+    const payload = value.payload;
+    if (typeof payload.x === "number" && typeof payload.y === "number") {
+      return { x: payload.x, y: payload.y };
+    }
+  }
+  return null;
+}
+
+function parseSize(value) {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  if (typeof value.width === "number" && typeof value.height === "number") {
+    return { width: value.width, height: value.height };
+  }
+  if (value.payload && typeof value.payload === "object") {
+    const payload = value.payload;
+    if (typeof payload.width === "number" && typeof payload.height === "number") {
+      return { width: payload.width, height: payload.height };
+    }
+  }
+  return null;
+}
+
 function createController() {
   const state = {
     currentRoute: "",
@@ -63,6 +99,11 @@ function createController() {
     retryTimer: 0,
     resizeHandler: null,
     clickHandler: null,
+    unlistenMoved: null,
+    unlistenResized: null,
+    tauriRectReady: false,
+    tauriSyncInFlight: false,
+    lastTauriSyncAt: 0,
   };
 
   function getScreenRect() {
@@ -73,11 +114,10 @@ function createController() {
       1,
       window.screen.availHeight || window.screen.height || window.innerHeight,
     );
-
     return { x, y, width, height };
   }
 
-  function getWindowRect() {
+  function getBrowserWindowRect() {
     const x =
       typeof window.screenX === "number"
         ? window.screenX
@@ -92,17 +132,93 @@ function createController() {
           : 0;
     const width = Math.max(1, window.outerWidth || window.innerWidth);
     const height = Math.max(1, window.outerHeight || window.innerHeight);
-
     return { x, y, width, height };
   }
 
   function syncRects() {
     state.screenRect = getScreenRect();
-    state.windowRect = getWindowRect();
-
+    if (!state.tauriRectReady) {
+      state.windowRect = getBrowserWindowRect();
+    }
     if (!state.lastWindowRect) {
       state.lastWindowRect = { ...state.windowRect };
     }
+  }
+
+  async function syncWindowRectFromTauri(force = false) {
+    const now = performance.now();
+    if (!force) {
+      if (state.tauriSyncInFlight) return;
+      if (now - state.lastTauriSyncAt < WINDOW_SYNC_INTERVAL_MS) return;
+    }
+
+    state.tauriSyncInFlight = true;
+    state.lastTauriSyncAt = now;
+    try {
+      const [positionRaw, sizeRaw] = await Promise.all([appWindow.outerPosition(), appWindow.outerSize()]);
+      const position = parsePosition(positionRaw);
+      const size = parseSize(sizeRaw);
+      if (position && size) {
+        state.windowRect = {
+          x: position.x,
+          y: position.y,
+          width: Math.max(1, size.width),
+          height: Math.max(1, size.height),
+        };
+        state.tauriRectReady = true;
+      }
+    } catch {
+      state.tauriRectReady = false;
+    } finally {
+      state.tauriSyncInFlight = false;
+    }
+  }
+
+  async function startWindowTracking() {
+    if (!state.unlistenMoved) {
+      try {
+        state.unlistenMoved = await appWindow.onMoved((event) => {
+          const position = parsePosition(event);
+          if (!position) return;
+          state.windowRect = { ...state.windowRect, x: position.x, y: position.y };
+          state.tauriRectReady = true;
+        });
+      } catch {
+        state.unlistenMoved = null;
+      }
+    }
+
+    if (!state.unlistenResized) {
+      try {
+        state.unlistenResized = await appWindow.onResized((event) => {
+          const size = parseSize(event);
+          if (!size) return;
+          state.windowRect = {
+            ...state.windowRect,
+            width: Math.max(1, size.width),
+            height: Math.max(1, size.height),
+          };
+          state.tauriRectReady = true;
+        });
+      } catch {
+        state.unlistenResized = null;
+      }
+    }
+
+    await syncWindowRectFromTauri(true);
+  }
+
+  function stopWindowTracking() {
+    if (state.unlistenMoved) {
+      state.unlistenMoved();
+      state.unlistenMoved = null;
+    }
+    if (state.unlistenResized) {
+      state.unlistenResized();
+      state.unlistenResized = null;
+    }
+    state.tauriRectReady = false;
+    state.tauriSyncInFlight = false;
   }
 
   function ensureOverlay() {
@@ -126,7 +242,6 @@ function createController() {
 
   function syncOverlayBounds() {
     if (!state.overlay) return;
-
     state.overlay.style.left = "0px";
     state.overlay.style.top = "0px";
     state.overlay.style.width = `${Math.max(1, window.innerWidth)}px`;
@@ -138,7 +253,6 @@ function createController() {
       cancelAnimationFrame(state.frameId);
       state.frameId = 0;
     }
-
     state.lastFrame = 0;
   }
 
@@ -147,7 +261,6 @@ function createController() {
       clearTimeout(state.fadeTimer);
       state.fadeTimer = 0;
     }
-
     if (state.retryTimer) {
       clearTimeout(state.retryTimer);
       state.retryTimer = 0;
@@ -159,11 +272,11 @@ function createController() {
       window.removeEventListener("resize", state.resizeHandler);
       state.resizeHandler = null;
     }
-
     if (state.clickHandler) {
       document.removeEventListener("click", state.clickHandler, true);
       state.clickHandler = null;
     }
+    stopWindowTracking();
   }
 
   function destroyMatterWorld() {
@@ -171,7 +284,6 @@ function createController() {
       state.boundaryBodies = [];
       return;
     }
-
     World.clear(state.engine.world, false);
     Engine.clear(state.engine);
     state.engine = null;
@@ -182,13 +294,11 @@ function createController() {
     if (state.overlay && state.overlay.parentNode) {
       state.overlay.parentNode.removeChild(state.overlay);
     }
-
     state.overlay = null;
   }
 
   function createScreenBounds() {
     if (!state.engine) return;
-
     if (state.boundaryBodies.length > 0) {
       World.remove(state.engine.world, state.boundaryBodies);
     }
@@ -235,12 +345,13 @@ function createController() {
         isPointInRect(body.position, curr, avatar.halfSize) &&
         !isPointInRect(body.position, prev, avatar.halfSize);
 
-      if (!enteredNow) {
-        continue;
-      }
+      if (!enteredNow) continue;
 
-      const currentVelocity = body.velocity;
-      const nextVelocity = { x: currentVelocity.x + dx * WINDOW_SWEEP_PUSH, y: currentVelocity.y + dy * WINDOW_SWEEP_PUSH };
+      const velocity = body.velocity;
+      const nextVelocity = {
+        x: velocity.x + dx * WINDOW_SWEEP_PUSH,
+        y: velocity.y + dy * WINDOW_SWEEP_PUSH,
+      };
 
       if (primaryIsX) {
         if (dx > 0) {
@@ -298,6 +409,7 @@ function createController() {
     }
 
     syncRects();
+    syncWindowRectFromTauri();
     applyWindowSweepImpulse();
     state.lastWindowRect = { ...state.windowRect };
 
@@ -485,7 +597,6 @@ function createController() {
 
     const spawnYMin = win.y + Math.max(30, height * 0.25);
     const spawnYMax = win.y + Math.max(60, height * 0.42);
-
     const launchTargetYMin = win.y + Math.max(20, height * 0.08);
     const launchTargetYMax = win.y + Math.max(40, height * 0.2);
     const launchTargetOffsetX = width * 0.14;
@@ -594,8 +705,10 @@ function createController() {
     window.addEventListener("resize", state.resizeHandler);
   }
 
-  function startRuntime(contributors) {
+  async function startRuntime(contributors) {
     clearRuntimeState();
+    syncRects();
+    await startWindowTracking();
     syncRects();
     ensureOverlay();
     syncOverlayBounds();
