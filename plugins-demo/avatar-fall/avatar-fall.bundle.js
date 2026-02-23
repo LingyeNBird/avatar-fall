@@ -5123,23 +5123,100 @@
       });
       return contributors;
     }
-    function getLoadMoreButton() {
-      return document.querySelector(".contributor-section .load-more-section button");
-    }
-    function expandContributorList(onDone) {
-      const maxClicks = 200;
-      let clicks = 0;
-      function step() {
-        const button = getLoadMoreButton();
-        if (!button || button.disabled || clicks >= maxClicks) {
-          onDone();
-          return;
-        }
-        button.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
-        clicks += 1;
-        window.setTimeout(step, 80);
+    function normalizeContributors(items) {
+      const seen = /* @__PURE__ */ new Set();
+      const contributors = [];
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
+        if (!item || typeof item !== "object") continue;
+        const avatar = typeof item.avatar === "string" ? item.avatar : "";
+        if (!avatar || seen.has(avatar)) continue;
+        seen.add(avatar);
+        contributors.push({
+          name: typeof item.name === "string" && item.name ? item.name : `avatar-${index}`,
+          avatar
+        });
       }
-      step();
+      return contributors;
+    }
+    function findContributorsArray(root) {
+      if (!root || typeof root !== "object" && typeof root !== "function") {
+        return [];
+      }
+      const queue = [{ value: root, depth: 0 }];
+      const visited = /* @__PURE__ */ new Set();
+      let best = [];
+      while (queue.length > 0) {
+        const current = queue.shift();
+        if (!current) continue;
+        const { value, depth } = current;
+        if (!value || typeof value !== "object" && typeof value !== "function") {
+          continue;
+        }
+        if (visited.has(value)) {
+          continue;
+        }
+        visited.add(value);
+        if (Array.isArray(value)) {
+          const normalized = normalizeContributors(value);
+          if (normalized.length > best.length) {
+            best = normalized;
+          }
+          continue;
+        }
+        if (depth >= 4) {
+          continue;
+        }
+        const nextDepth = depth + 1;
+        const objectValue = value;
+        for (const key of Object.keys(objectValue)) {
+          if (key.startsWith("__v_")) continue;
+          let child;
+          try {
+            child = objectValue[key];
+          } catch (e) {
+            continue;
+          }
+          if (child && (typeof child === "object" || typeof child === "function")) {
+            queue.push({ value: child, depth: nextDepth });
+          }
+        }
+      }
+      return best;
+    }
+    function collectContributorsFromVueState() {
+      const section = document.querySelector(".contributor-section");
+      if (!section) return [];
+      const candidates = [];
+      const markerKeys = Object.keys(section).filter((key) => key.startsWith("__vue"));
+      for (const key of markerKeys) {
+        const candidate = section[key];
+        if (candidate) {
+          candidates.push(candidate);
+        }
+      }
+      if (section.__vueParentComponent) {
+        let node = section.__vueParentComponent;
+        for (let i = 0; i < 5 && node; i += 1) {
+          candidates.push(node);
+          node = node.parent;
+        }
+      }
+      let best = [];
+      for (const candidate of candidates) {
+        const normalized = findContributorsArray(candidate);
+        if (normalized.length > best.length) {
+          best = normalized;
+        }
+      }
+      return best;
+    }
+    function collectAllContributors() {
+      const fromVue = collectContributorsFromVueState();
+      if (fromVue.length > 0) {
+        return fromVue;
+      }
+      return collectContributors();
     }
     function createAvatarElement(name, avatarUrl) {
       const wrapper = document.createElement("div");
@@ -5311,22 +5388,20 @@
           state.pending = false;
           return;
         }
-        expandContributorList(() => {
-          if (state.currentRoute !== ABOUT_PATH) {
-            state.pending = false;
-            return;
-          }
-          const contributors = collectContributors();
-          if (contributors.length === 0 && attempts < maxAttempts) {
-            attempts += 1;
-            state.retryTimer = window.setTimeout(boot, 150);
-            return;
-          }
+        const contributors = collectAllContributors();
+        if (contributors.length === 0 && attempts < maxAttempts) {
+          attempts += 1;
+          state.retryTimer = window.setTimeout(boot, 150);
+          return;
+        }
+        if (state.currentRoute !== ABOUT_PATH) {
           state.pending = false;
-          if (contributors.length > 0) {
-            startRuntime(contributors);
-          }
-        });
+          return;
+        }
+        state.pending = false;
+        if (contributors.length > 0) {
+          startRuntime(contributors);
+        }
       };
       boot();
     }
